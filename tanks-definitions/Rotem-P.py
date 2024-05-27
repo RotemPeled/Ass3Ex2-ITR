@@ -3,10 +3,6 @@ from math import degrees, atan2, sqrt
 import random
 import time
 from collections import deque
-import logging
-
-# Set up logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class RotemPTankController(TankController):
     def __init__(self, tank_id: str):
@@ -20,20 +16,18 @@ class RotemPTankController(TankController):
         self.getting_hit_counter = 0
         self.moving_forward_start_time = None
         self.moving_forward_start_position = None
+        self.obstacle_avoidance_time = 0
 
     @property
     def id(self) -> str:
-        return "Rotem-P-first"
+        return "Rotem-P"
 
     def decide_what_to_do_next(self, gamestate: GameState) -> str:
         my_tank = next(tank for tank in gamestate.tanks if tank.id == self.id)
         
-        logging.debug(f"My tank position: {my_tank.position}, health: {my_tank.health}, angle: {my_tank.angle}")
-        
         # Check if tank is getting hit
         if my_tank.health < self.last_health:
             self.getting_hit_counter += 1
-            logging.debug("Tank is getting hit!")
         else:
             self.getting_hit_counter = max(0, self.getting_hit_counter - 1)
         
@@ -43,15 +37,14 @@ class RotemPTankController(TankController):
         if self.getting_hit_counter >= 3:
             self.action_queue.append(MOVE_FORWARD)
             self.getting_hit_counter = 0
-            logging.debug("Moving forward to escape being hit")
             return self.action_queue.popleft()
 
         # Check if tank is stuck while moving forward
         self.check_if_stuck(my_tank)
 
+        # Acquire a new target if necessary
         if not self.target_tank or self.target_tank.health <= 0:
             self.target_tank = self.find_closest_enemy_tank(gamestate)
-            logging.debug(f"New target acquired: {self.target_tank.id if self.target_tank else 'None'}")
 
         if self.target_tank:
             dx = self.target_tank.position[0] - my_tank.position[0]
@@ -65,58 +58,54 @@ class RotemPTankController(TankController):
             if self.stuck_counter > 0:
                 self.stuck_counter -= 1
                 self.action_queue.append(self.turn_direction)
-                logging.debug(f"Unstuck attempt, turn direction: {self.turn_direction}")
                 return self.action_queue.popleft()
 
             if self.is_collision_with_trees(my_tank, gamestate):
-                # Try to free the tank from the tree
-                self.stuck_counter = 10
+                # Avoid the tree by turning in a random direction
+                self.obstacle_avoidance_time = current_time
                 self.turn_direction = TURN_LEFT if random.random() > 0.5 else TURN_RIGHT
                 self.action_queue.append(self.turn_direction)
-                logging.debug("Tank is stuck on a tree, attempting to turn")
+                return self.action_queue.popleft()
+
+            if current_time - self.obstacle_avoidance_time < 1:
+                # Continue turning to avoid the obstacle for a short duration
+                self.action_queue.append(self.turn_direction)
                 return self.action_queue.popleft()
 
             if abs(angle_diff) > 5:
                 self.turn_direction = self.determine_turn_direction(my_tank.angle, desired_angle)
                 self.action_queue.append(self.turn_direction)
-                logging.debug(f"Turning towards target, direction: {self.turn_direction}, angle_diff: {angle_diff}")
-            elif distance > max(TANK_SIZE) * 4:
+            elif distance > max(TANK_SIZE) * 4.5:
                 self.action_queue.append(MOVE_FORWARD)
-                logging.debug("Moving forward towards target")
                 self.moving_forward_start_time = current_time
                 self.moving_forward_start_position = my_tank.position
             elif current_time - self.last_super_shot_time >= SUPER_BULLET_COOLDOWN / 1000:
                 self.last_super_shot_time = current_time
                 self.action_queue.append(SHOOT_SUPER)
-                logging.debug("Shooting super bullet")
             elif self.clear_shot(gamestate, my_tank, self.target_tank):
                 self.action_queue.append(SHOOT)
-                logging.debug("Shooting regular bullet")
             else:
                 self.action_queue.append(MOVE_FORWARD)
-                logging.debug("Moving forward")
 
         if self.action_queue:
             action = self.action_queue.popleft()
-            logging.debug(f"Action taken: {action}")
             return action
         else:
-            logging.debug("Default action: MOVE_FORWARD")
             return MOVE_FORWARD
 
     def check_if_stuck(self, my_tank):
         current_time = time.time()
         if self.moving_forward_start_time and current_time - self.moving_forward_start_time > 1.5:
             distance_moved = self.distance(my_tank.position, self.moving_forward_start_position)
-            logging.debug(f"Distance moved in 1.5s: {distance_moved}")
             if distance_moved < 1:  # Consider stuck if moved less than 1 unit
-                logging.debug(f"Tank is stuck while moving forward. Position: {my_tank.position}, Start position: {self.moving_forward_start_position}")
                 self.target_tank = None  # Force acquiring a new target
+                self.stuck_counter = 10
+                self.turn_direction = TURN_LEFT if random.random() > 0.5 else TURN_RIGHT
+                self.action_queue.append(self.turn_direction)
             self.moving_forward_start_time = None
         elif not self.moving_forward_start_time and self.action_queue and self.action_queue[0] == MOVE_FORWARD:
             self.moving_forward_start_time = current_time
             self.moving_forward_start_position = my_tank.position
-            logging.debug(f"Started tracking movement to check for being stuck. Start position: {self.moving_forward_start_position}")
 
     def determine_turn_direction(self, current_angle, target_angle):
         angle_diff = normalize_angle(target_angle - current_angle)
