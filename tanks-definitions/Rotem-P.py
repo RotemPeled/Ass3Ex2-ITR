@@ -18,6 +18,8 @@ class RotemPTankController(TankController):
         self.action_queue = deque()
         self.last_health = INITIAL_TANK_HEALTH
         self.getting_hit_counter = 0
+        self.moving_forward_start_time = None
+        self.moving_forward_start_position = None
 
     @property
     def id(self) -> str:
@@ -43,6 +45,9 @@ class RotemPTankController(TankController):
             self.getting_hit_counter = 0
             logging.debug("Moving forward to escape being hit")
             return self.action_queue.popleft()
+
+        # Check if tank is stuck while moving forward
+        self.check_if_stuck(my_tank)
 
         if not self.target_tank or self.target_tank.health <= 0:
             self.target_tank = self.find_closest_enemy_tank(gamestate)
@@ -78,6 +83,8 @@ class RotemPTankController(TankController):
             elif distance > max(TANK_SIZE) * 4:
                 self.action_queue.append(MOVE_FORWARD)
                 logging.debug("Moving forward towards target")
+                self.moving_forward_start_time = current_time
+                self.moving_forward_start_position = my_tank.position
             elif current_time - self.last_super_shot_time >= SUPER_BULLET_COOLDOWN / 1000:
                 self.last_super_shot_time = current_time
                 self.action_queue.append(SHOOT_SUPER)
@@ -96,6 +103,20 @@ class RotemPTankController(TankController):
         else:
             logging.debug("Default action: MOVE_FORWARD")
             return MOVE_FORWARD
+
+    def check_if_stuck(self, my_tank):
+        current_time = time.time()
+        if self.moving_forward_start_time and current_time - self.moving_forward_start_time > 1.5:
+            distance_moved = self.distance(my_tank.position, self.moving_forward_start_position)
+            logging.debug(f"Distance moved in 1.5s: {distance_moved}")
+            if distance_moved < 1:  # Consider stuck if moved less than 1 unit
+                logging.debug(f"Tank is stuck while moving forward. Position: {my_tank.position}, Start position: {self.moving_forward_start_position}")
+                self.target_tank = None  # Force acquiring a new target
+            self.moving_forward_start_time = None
+        elif not self.moving_forward_start_time and self.action_queue and self.action_queue[0] == MOVE_FORWARD:
+            self.moving_forward_start_time = current_time
+            self.moving_forward_start_position = my_tank.position
+            logging.debug(f"Started tracking movement to check for being stuck. Start position: {self.moving_forward_start_position}")
 
     def determine_turn_direction(self, current_angle, target_angle):
         angle_diff = normalize_angle(target_angle - current_angle)
